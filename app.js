@@ -6,9 +6,9 @@ import {
   createQuizSession,
   getQuizSession,
   endQuizSession,
-  recordAnswer,
+  checkAnswer,
   advanceQuestion,
-  buildLeaderboard,
+  getResult,
 } from './quiz.js';
 
 const client = new Client({
@@ -58,10 +58,7 @@ function formatQuestion(session) {
   const q = session.questions[session.currentIndex];
   const total = session.questions.length;
   const num = session.currentIndex + 1;
-  const opts = Object.entries(q.options)
-    .map(([k, v]) => `**${k}:** ${v}`)
-    .join('\n');
-  return `**Question ${num}/${total}**\n${q.question}\n\n${opts}\n\n*Reply with A, B, C, or D — first correct answer scores a point!*`;
+  return `**Question ${num}/${total}**\n${q.question}\n\n*Type your answer in the chat — 30 seconds!*`;
 }
 
 function scheduleQuizTimeout(channelId, channel) {
@@ -75,14 +72,12 @@ function scheduleQuizTimeout(channelId, channel) {
     if (!s || !s.active) return;
 
     const current = s.questions[s.currentIndex];
-    await channel.send(
-      `⏰ Time's up! The answer was **${current.answer}: ${current.options[current.answer]}**.`,
-    );
+    await channel.send(`⏰ Time's up! The answer was **${current.answer}**.`);
 
     const next = advanceQuestion(channelId);
     if (next === -1) {
-      const leaderboard = buildLeaderboard(channelId);
-      await channel.send(`🏁 Quiz over!\n\n${leaderboard}`);
+      const { score, total, userId } = getResult(channelId);
+      await channel.send(`🏁 Quiz over! <@${userId}> scored **${score}/${total}**`);
       endQuizSession(channelId);
     } else {
       const nextSession = getQuizSession(channelId);
@@ -93,24 +88,26 @@ function scheduleQuizTimeout(channelId, channel) {
 }
 
 async function handleQuizCommand(interaction) {
-  const topic = interaction.options.getString('topic');
-  const numQuestions = Math.min(10, Math.max(1, interaction.options.getInteger('questions') ?? 5));
-
-  // End any existing quiz in this channel
+  // Guard: reject if a quiz is already running
   if (getQuizSession(interaction.channelId)) {
-    endQuizSession(interaction.channelId);
+    return interaction.reply({ content: 'A quiz is already running in this channel.', ephemeral: true });
   }
+
+  const topic = interaction.options.getString('topic');
+  const rounds = interaction.options.getInteger('rounds');
 
   await interaction.deferReply();
 
   const prompt =
-    `Generate exactly ${numQuestions} trivia quiz questions about "${topic}". ` +
-    'Return ONLY a valid JSON array with no markdown, no explanation, no code fences. ' +
-    'Format: [{"question":"...","options":{"A":"...","B":"...","C":"...","D":"..."},"answer":"A"}]';
+    `Generate exactly ${rounds} trivia questions about "${topic}". ` +
+    'Return ONLY a valid JSON array with no markdown, no code fences. ' +
+    'Each element: {"question":"...","answer":"..."}. ' +
+    'The answer must be a single short unambiguous phrase (1-2 words). ' +
+    'Write questions that have exactly one obvious short answer.';
 
   try {
     const result = await genAI
-      .getGenerativeModel({ model: 'gemini-2.5-flash' })
+      .getGenerativeModel({ model: 'gemini-1.5-flash' })
       .generateContent(prompt);
     const raw = result.response.text().trim();
 
@@ -122,12 +119,12 @@ async function handleQuizCommand(interaction) {
       return interaction.editReply('Failed to generate quiz questions. Please try again.');
     }
 
-    const session = createQuizSession(interaction.channelId, questions);
+    const session = createQuizSession(interaction.channelId, questions, interaction.user.id);
     await interaction.editReply(
-      `🎯 **Quiz started!** Topic: **${topic}** — ${questions.length} question${questions.length !== 1 ? 's' : ''}\n\n` +
-      formatQuestion(session),
+      `🎯 Quiz started! Topic: **${topic}** — ${questions.length} round${questions.length !== 1 ? 's' : ''}. Good luck!`,
     );
 
+    await interaction.channel.send(formatQuestion(session));
     scheduleQuizTimeout(interaction.channelId, interaction.channel);
   } catch (err) {
     console.error('Quiz generation error:', err.message);
@@ -135,39 +132,34 @@ async function handleQuizCommand(interaction) {
   }
 }
 
-async function handleQuizAnswer(message, answer) {
+async function handleQuizAnswer(message) {
   const session = getQuizSession(message.channelId);
   if (!session || !session.active) return;
 
-  const result = recordAnswer(message.channelId, message.author.id, answer);
+  const result = checkAnswer(message.channelId, message.author.id, message.content);
   if (!result) return;
 
-  const current = session.questions[session.currentIndex];
-
   if (result.correct) {
-    // Clear the timeout — we got an answer
+    // Clear the timeout — correct answer received
     if (session.timeoutId) {
       clearTimeout(session.timeoutId);
       session.timeoutId = null;
     }
 
-    await message.reply(
-      `✅ Correct! The answer was **${current.answer}: ${current.options[current.answer]}**. +1 point for you!`,
-    );
+    await message.reply(`✅ <@${message.author.id}> got it! The answer was **${result.answer}**.`);
 
     const next = advanceQuestion(message.channelId);
     if (next === -1) {
-      const leaderboard = buildLeaderboard(message.channelId);
-      await message.channel.send(`🏁 Quiz over!\n\n${leaderboard}`);
+      const { score, total, userId } = getResult(message.channelId);
+      await message.channel.send(`🏁 Quiz over! <@${userId}> scored **${score}/${total}**`);
       endQuizSession(message.channelId);
     } else {
       const nextSession = getQuizSession(message.channelId);
       await message.channel.send(formatQuestion(nextSession));
       scheduleQuizTimeout(message.channelId, message.channel);
     }
-  } else {
-    await message.reply(`❌ Wrong answer! Keep trying.`);
   }
+  // Wrong answer: stay silent
 }
 
 // ── Event: ready ──────────────────────────────────────────────────────────────
@@ -205,11 +197,8 @@ client.on('messageCreate', async (message) => {
   // Quiz answer interception — check before anything else
   const quizSession = getQuizSession(message.channelId);
   if (quizSession && quizSession.active) {
-    const answer = message.content.trim().toUpperCase();
-    if (['A', 'B', 'C', 'D'].includes(answer)) {
-      await handleQuizAnswer(message, answer);
-      return;
-    }
+    await handleQuizAnswer(message);
+    return;
   }
 
   // Only respond to @mentions for normal chat

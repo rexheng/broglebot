@@ -90,16 +90,21 @@ const QUIZ_COMMAND = {
   description: 'Start an AI-generated quiz on any topic',
   options: [
     {
-      type: 3,
+      type: 3,          // STRING
       name: 'topic',
       description: 'Quiz topic',
       required: true,
     },
     {
-      type: 4,
-      name: 'questions',
-      description: 'Number of questions (1-10, default 5)',
-      required: false,
+      type: 4,          // INTEGER
+      name: 'rounds',
+      description: 'Number of rounds',
+      required: true,
+      choices: [
+        { name: '5',  value: 5  },
+        { name: '10', value: 10 },
+        { name: '20', value: 20 },
+      ],
     },
   ],
   type: 1,
