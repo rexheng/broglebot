@@ -62,6 +62,51 @@ const AI_COMMAND = {
   contexts: [0, 1, 2],
 };
 
-const ALL_COMMANDS = [TEST_COMMAND, CHALLENGE_COMMAND, AI_COMMAND];
+const PERSONALITY_COMMAND = {
+  name: 'personality',
+  description: 'Change the bot personality',
+  options: [
+    {
+      type: 3,
+      name: 'preset',
+      description: 'Choose a personality preset',
+      required: true,
+      choices: [
+        { name: 'Default', value: 'default' },
+        { name: 'Sarcastic', value: 'sarcastic' },
+        { name: 'Pirate', value: 'pirate' },
+        { name: 'Professor', value: 'professor' },
+        { name: 'Hype Beast', value: 'hype' },
+      ],
+    },
+  ],
+  type: 1,
+  integration_types: [0, 1],
+  contexts: [0, 1, 2],
+};
+
+const QUIZ_COMMAND = {
+  name: 'quiz',
+  description: 'Start an AI-generated quiz on any topic',
+  options: [
+    {
+      type: 3,
+      name: 'topic',
+      description: 'Quiz topic',
+      required: true,
+    },
+    {
+      type: 4,
+      name: 'questions',
+      description: 'Number of questions (1-10, default 5)',
+      required: false,
+    },
+  ],
+  type: 1,
+  integration_types: [0, 1],
+  contexts: [0, 1, 2],
+};
+
+const ALL_COMMANDS = [TEST_COMMAND, CHALLENGE_COMMAND, AI_COMMAND, PERSONALITY_COMMAND, QUIZ_COMMAND];
 
 InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS);
