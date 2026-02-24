@@ -107,7 +107,7 @@ async function handleQuizCommand(interaction) {
 
   try {
     const result = await genAI
-      .getGenerativeModel({ model: 'gemini-1.5-flash' })
+      .getGenerativeModel({ model: 'gemini-2.5-flash' })
       .generateContent(prompt);
     const raw = result.response.text().trim();
 
