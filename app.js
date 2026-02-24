@@ -1,71 +1,55 @@
+import { Client, GatewayIntentBits } from 'discord.js';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import 'dotenv/config';
-import express from 'express';
-import {
-  ButtonStyleTypes,
-  InteractionResponseFlags,
-  InteractionResponseType,
-  InteractionType,
-  MessageComponentTypes,
-  verifyKeyMiddleware,
-} from 'discord-interactions';
-import { getRandomEmoji, DiscordRequest } from './utils.js';
-import { getShuffledOptions, getResult } from './game.js';
 
-// Create an express app
-const app = express();
-// Get port, or default to 3000
-const PORT = process.env.PORT || 3000;
-// To keep track of our active games
-const activeGames = {};
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
 
-/**
- * Interactions endpoint URL where Discord will send HTTP requests
- * Parse request body and verifies incoming requests using discord-interactions package
- */
-app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async function (req, res) {
-  // Interaction id, type and data
-  const { id, type, data } = req.body;
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-  /**
-   * Handle verification requests
-   */
-  if (type === InteractionType.PING) {
-    return res.send({ type: InteractionResponseType.PONG });
+// Per-user cooldown (10 seconds)
+const cooldowns = new Map();
+const COOLDOWN_MS = 10_000;
+
+client.once('ready', () => {
+  console.log(`Ready: ${client.user.tag}`);
+});
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  if (!message.mentions.has(client.user)) return;
+
+  const now = Date.now();
+  const last = cooldowns.get(message.author.id) || 0;
+  if (now - last < COOLDOWN_MS) {
+    return message.reply('Please wait a moment before asking again.');
   }
+  cooldowns.set(message.author.id, now);
 
-  /**
-   * Handle slash command requests
-   * See https://discord.com/developers/docs/interactions/application-commands#slash-commands
-   */
-  if (type === InteractionType.APPLICATION_COMMAND) {
-    const { name } = data;
+  const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
+  if (!prompt) return message.reply('Ask me anything!');
 
-    // "test" command
-    if (name === 'test') {
-      // Send a message into the channel where command was triggered from
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-          flags: InteractionResponseFlags.IS_COMPONENTS_V2,
-          components: [
-            {
-              type: MessageComponentTypes.TEXT_DISPLAY,
-              // Fetches a random emoji to send from a helper function
-              content: `hello world ${getRandomEmoji()}`
-            }
-          ]
-        },
-      });
+  try {
+    await message.channel.sendTyping();
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+
+    // Discord messages have a 2000-char limit
+    if (text.length <= 2000) {
+      return message.reply(text);
     }
-
-    console.error(`unknown command: ${name}`);
-    return res.status(400).json({ error: 'unknown command' });
+    // Split long responses
+    return message.reply(text.slice(0, 1997) + '…');
+  } catch (err) {
+    console.error('Gemini error:', err.message);
+    return message.reply('Sorry, I ran into an error. Please try again later.');
   }
-
-  console.error('unknown interaction type', type);
-  return res.status(400).json({ error: 'unknown interaction type' });
 });
 
-app.listen(PORT, () => {
-  console.log('Listening on port', PORT);
-});
+client.login(process.env.DISCORD_TOKEN);
